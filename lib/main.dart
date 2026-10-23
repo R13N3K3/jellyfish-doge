@@ -204,7 +204,7 @@ class JellyfishGame extends FlameGame
 
   int _level(UpgradeTrack t) => upgradeLevels[t.index].value;
   int get chargeCost => 5 - _level(UpgradeTrack.charge);
-  double get shockRadius => 170 + 40.0 * _level(UpgradeTrack.range);
+  double get shockRadius => (170 + 40.0 * _level(UpgradeTrack.range)) * scale;
   double get stunSeconds => 2.0 + 0.8 * _level(UpgradeTrack.stun);
 
   JellyfishComponent? jellyfish;
@@ -218,8 +218,13 @@ class JellyfishGame extends FlameGame
   bool newBest = false;
   bool inMenu = !_demo;
 
+  // All sizes, speeds and distances are designed for a screen about 400 dp wide
+  // (e.g. Samsung Galaxy A16) and scaled with the actual width of the device.
+  static const double _refWidth = 400;
+  double get scale => min(max(size.x / _refWidth, 0.8), 1.8);
+
   // Difficulty increases over time.
-  double get fishSpeed => min(140 + elapsed * 3, 380);
+  double get fishSpeed => min(140 + elapsed * 3, 380) * scale;
   double get spawnInterval => max(1.3 - elapsed * 0.008, 0.6);
 
   // Depth in meters: 2 m per second.
@@ -371,7 +376,7 @@ class JellyfishGame extends FlameGame
   }
 
   HazardComponent _makeAngler() {
-    final fishSize = 42.0 + rng.nextDouble() * 22;
+    final fishSize = (42.0 + rng.nextDouble() * 22) * scale;
     final x = fishSize / 2 + rng.nextDouble() * (size.x - fishSize);
     return AnglerFishComponent(
       fishSize: fishSize,
@@ -383,7 +388,7 @@ class JellyfishGame extends FlameGame
 
   // Fast fish that dive diagonally.
   HazardComponent _makeViper() {
-    final fishSize = 40.0 + rng.nextDouble() * 14;
+    final fishSize = (40.0 + rng.nextDouble() * 14) * scale;
     final dir = rng.nextBool() ? 1.0 : -1.0;
     final vy = fishSpeed * 1.5;
     final vx = dir * vy * (0.3 + rng.nextDouble() * 0.25);
@@ -399,8 +404,8 @@ class JellyfishGame extends FlameGame
 
   // Big slow fish that sway from side to side.
   HazardComponent _makeSpikefish() {
-    final fishSize = 56.0 + rng.nextDouble() * 16;
-    final amp = 35 + rng.nextDouble() * 35;
+    final fishSize = (56.0 + rng.nextDouble() * 16) * scale;
+    final amp = (35 + rng.nextDouble() * 35) * scale;
     final lo = amp + fishSize / 2;
     final hi = max(lo, size.x - amp - fishSize / 2);
     final x = lo + rng.nextDouble() * (hi - lo);
@@ -416,10 +421,10 @@ class JellyfishGame extends FlameGame
   }
 
   HazardComponent _makeMine() {
-    const s = 46.0;
+    final s = 46.0 * scale;
     return MineComponent(
       mineSize: s,
-      speed: min(90 + rng.nextDouble() * 30 + elapsed * 0.5, 170),
+      speed: min(90 + rng.nextDouble() * 30 + elapsed * 0.5, 170) * scale,
     )..position = Vector2(s / 2 + rng.nextDouble() * (size.x - s), -s);
   }
 
@@ -429,10 +434,10 @@ class JellyfishGame extends FlameGame
   // that is on its way: we simulate the next seconds and track the x-ranges the
   // jellyfish can reach, given a realistic maximum steering speed.
 
-  static const double _vmax = 320; // px/s the jellyfish is expected to move
-  static const double _jellyRadius = 38; // hitbox + float bob + safety margin
-  static const double _minGap =
-      30; // smallest gap that still counts as passable
+  double get _vmax => 320 * scale; // px/s the jellyfish is expected to move
+  double get _jellyRadius => 38 * scale; // hitbox + float bob + safety margin
+  double get _minGap =>
+      30 * scale; // smallest gap that still counts as passable
 
   // Tries a few random placements and returns the hazard that was added.
   HazardComponent? _trySpawn(HazardComponent Function() make) {
@@ -450,9 +455,11 @@ class JellyfishGame extends FlameGame
     final j = jellyfish;
     if (j == null || size.x < 120) return true;
     final existing = children.whereType<HazardComponent>().toList();
-    final lo = 32.0;
-    final hi = size.x - 32;
-    final near = (max(lo, j.position.x - 60), min(hi, j.position.x + 60));
+    final lo = 32.0 * scale;
+    final hi = size.x - 32 * scale;
+    final tolerance = 60 * scale;
+    final near =
+        (max(lo, j.position.x - tolerance), min(hi, j.position.x + tolerance));
 
     if (_hasPath([...existing, candidate], near, j)) return true;
     // If there was no way through even before this hazard (the player is
@@ -467,9 +474,9 @@ class JellyfishGame extends FlameGame
       JellyfishComponent j) {
     const dt = 0.05;
     const horizon = 9.0;
-    final lo = 32.0;
-    final hi = size.x - 32;
-    final jy = j.baseY - 14; // center of the jellyfish hitbox
+    final lo = 32.0 * scale;
+    final hi = size.x - 32 * scale;
+    final jy = j.baseY - 14 * scale; // center of the jellyfish hitbox
     var free = <(double, double)>[start];
 
     for (var t = dt; t <= horizon; t += dt) {
@@ -530,15 +537,18 @@ class JellyfishGame extends FlameGame
 
   // Pearls sometimes float right next to the latest fish: risk and reward.
   void _spawnPearl() {
-    var x = 20 + rng.nextDouble() * (size.x - 40);
+    final margin = 20 * scale;
+    var x = margin + rng.nextDouble() * (size.x - 2 * margin);
     if (_lastFishX > 0 && rng.nextDouble() < 0.4) {
-      final off = (50 + rng.nextDouble() * 40) * (rng.nextBool() ? 1 : -1);
-      x = min(max(_lastFishX + off, 20), size.x - 20);
+      final off =
+          (50 + rng.nextDouble() * 40) * scale * (rng.nextBool() ? 1 : -1);
+      x = min(max(_lastFishX + off, margin), size.x - margin);
     }
     add(PearlComponent(
       value: rng.nextDouble() < 0.12 ? 3 : 1,
-      speed: max(110, fishSpeed * 0.6),
-    )..position = Vector2(x, -20));
+      speed: max(110 * scale, fishSpeed * 0.6),
+      scale: scale,
+    )..position = Vector2(x, -20 * scale));
   }
 
   // --- Events --------------------------------------------------------------
@@ -729,7 +739,15 @@ class JellyfishGame extends FlameGame
 
 class JellyfishComponent extends PositionComponent
     with CollisionCallbacks, HasGameReference<JellyfishGame> {
-  JellyfishComponent() : super(size: Vector2(64, 84), anchor: Anchor.center);
+  JellyfishComponent() : super(size: _baseSize.clone(), anchor: Anchor.center);
+
+  static final Vector2 _baseSize = Vector2(64, 84);
+
+  // Resting height: high enough to be comfortable for the thumb.
+  static const double _restHeight = 0.72;
+
+  CircleHitbox? _hitbox;
+  double _scale = 1;
 
   double _time = 0;
   double _baseY = 0;
@@ -752,15 +770,25 @@ class JellyfishComponent extends PositionComponent
   @override
   Future<void> onLoad() async {
     // Hitbox covers only the bell and upper tentacles: slightly smaller = fairer.
-    add(CircleHitbox(
-      radius: 24,
-      position: Vector2(size.x / 2 - 24, 4),
-    ));
+    final hitbox = CircleHitbox(radius: 24);
+    _hitbox = hitbox;
+    add(hitbox);
+    _applyScale(game.scale);
     reset(game.size);
   }
 
+  // Sizes the jellyfish and its hitbox for the current screen width.
+  void _applyScale(double scale) {
+    _scale = scale;
+    size = _baseSize * scale;
+    _hitbox
+      ?..radius = 24 * scale
+      ..position = Vector2(size.x / 2 - 24 * scale, 4 * scale);
+  }
+
   void reset(Vector2 screen) {
-    _baseY = screen.y - 140;
+    _applyScale(game.scale);
+    _baseY = screen.y * _restHeight;
     _invulnerable = 0;
     _shield = 0;
     position = Vector2(screen.x / 2, _baseY);
@@ -771,7 +799,8 @@ class JellyfishComponent extends PositionComponent
   void startShield(double seconds) => _shield = seconds;
 
   void onScreenResized(Vector2 screen) {
-    _baseY = screen.y - 140;
+    _applyScale(game.scale);
+    _baseY = screen.y * _restHeight;
     position.x =
         position.x.clamp(size.x / 2, max(size.x / 2, screen.x - size.x / 2));
   }
@@ -788,7 +817,7 @@ class JellyfishComponent extends PositionComponent
     if (_invulnerable > 0) _invulnerable = max(0, _invulnerable - dt);
     if (_shield > 0) _shield = max(0, _shield - dt);
     // Gentle floating.
-    position.y = _baseY + sin(_time * 2) * 8;
+    position.y = _baseY + sin(_time * 2) * 8 * _scale;
   }
 
   @override
@@ -1445,8 +1474,11 @@ class ShockwaveComponent extends PositionComponent {
 
 class PearlComponent extends PositionComponent
     with HasGameReference<JellyfishGame> {
-  PearlComponent({required this.value, required this.speed})
-      : super(size: Vector2.all(value > 1 ? 26 : 22), anchor: Anchor.center);
+  PearlComponent(
+      {required this.value, required this.speed, required double scale})
+      : super(
+            size: Vector2.all((value > 1 ? 26 : 22) * scale),
+            anchor: Anchor.center);
 
   final int value; // 1 = white pearl, 3 = golden pearl
   final double speed;
@@ -1474,8 +1506,8 @@ class PearlComponent extends PositionComponent
     final j = game.jellyfish;
     if (j != null && j.hasShield && !game.isGameOver) {
       final to = j.position - position;
-      if (to.length < 260) {
-        position.addScaled(to.normalized(), 520 * dt);
+      if (to.length < 260 * game.scale) {
+        position.addScaled(to.normalized(), 520 * game.scale * dt);
         return;
       }
     }
