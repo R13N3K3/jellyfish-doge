@@ -329,29 +329,37 @@ class JellyfishGame extends FlameGame
     final pViper = min(max((elapsed - 20) / 120, 0.0), 0.15);
     final pSpike = min(max((elapsed - 35) / 150, 0.0), 0.1);
     final r = rng.nextDouble();
-    if (r < pViper) {
-      _spawnViper();
-    } else if (r < pViper + pSpike) {
-      _spawnSpikefish();
+    final HazardComponent Function() make = r < pViper
+        ? _makeViper
+        : r < pViper + pSpike
+            ? _makeSpikefish
+            : _makeAngler;
+    final fish = _trySpawn(make) ?? _trySpawn(_makeAngler);
+    if (fish == null) {
+      // No fair spot right now: try again in a moment.
+      _fishTimer = spawnInterval * 0.5;
     } else {
-      _spawnAngler();
+      _lastFishX = fish.position.x;
     }
   }
 
-  void _spawnAngler() {
+  void _spawnMine() {
+    if (_trySpawn(_makeMine) == null) _mineTimer = 100; // retry next frame
+  }
+
+  HazardComponent _makeAngler() {
     final fishSize = 42.0 + rng.nextDouble() * 22;
     final x = fishSize / 2 + rng.nextDouble() * (size.x - fishSize);
-    _lastFishX = x;
-    add(AnglerFishComponent(
+    return AnglerFishComponent(
       fishSize: fishSize,
       speed: fishSpeed * (0.85 + rng.nextDouble() * 0.3),
       color: _fishColors[rng.nextInt(_fishColors.length)],
       lureColor: _lureColors[rng.nextInt(_lureColors.length)],
-    )..position = Vector2(x, -fishSize));
+    )..position = Vector2(x, -fishSize);
   }
 
   // Fast fish that dive diagonally.
-  void _spawnViper() {
+  HazardComponent _makeViper() {
     final fishSize = 40.0 + rng.nextDouble() * 14;
     final dir = rng.nextBool() ? 1.0 : -1.0;
     final vy = fishSpeed * 1.5;
@@ -359,23 +367,21 @@ class JellyfishGame extends FlameGame
     final x = dir > 0
         ? size.x * (0.05 + rng.nextDouble() * 0.55)
         : size.x * (0.4 + rng.nextDouble() * 0.55);
-    _lastFishX = x;
-    add(ViperFishComponent(
+    return ViperFishComponent(
       fishSize: fishSize,
       velocity: Vector2(vx, vy),
       color: _viperColors[rng.nextInt(_viperColors.length)],
-    )..position = Vector2(x, -fishSize));
+    )..position = Vector2(x, -fishSize);
   }
 
   // Big slow fish that sway from side to side.
-  void _spawnSpikefish() {
+  HazardComponent _makeSpikefish() {
     final fishSize = 56.0 + rng.nextDouble() * 16;
     final amp = 35 + rng.nextDouble() * 35;
     final lo = amp + fishSize / 2;
     final hi = max(lo, size.x - amp - fishSize / 2);
     final x = lo + rng.nextDouble() * (hi - lo);
-    _lastFishX = x;
-    add(SpikeFishComponent(
+    return SpikeFishComponent(
       fishSize: fishSize,
       speed: fishSpeed * 0.65,
       baseX: x,
@@ -383,15 +389,119 @@ class JellyfishGame extends FlameGame
       frequency: 1.4 + rng.nextDouble() * 1.2,
       phase: rng.nextDouble() * 2 * pi,
       color: _spikeColors[rng.nextInt(_spikeColors.length)],
-    )..position = Vector2(x, -fishSize));
+    )..position = Vector2(x, -fishSize);
   }
 
-  void _spawnMine() {
+  HazardComponent _makeMine() {
     const s = 46.0;
-    add(MineComponent(
+    return MineComponent(
       mineSize: s,
       speed: min(90 + rng.nextDouble() * 30 + elapsed * 0.5, 170),
-    )..position = Vector2(s / 2 + rng.nextDouble() * (size.x - s), -s));
+    )..position = Vector2(s / 2 + rng.nextDouble() * (size.x - s), -s);
+  }
+
+  // --- Fair spawning -------------------------------------------------------
+  //
+  // A new hazard is only added if the jellyfish can still get past everything
+  // that is on its way: we simulate the next seconds and track the x-ranges the
+  // jellyfish can reach, given a realistic maximum steering speed.
+
+  static const double _vmax = 320; // px/s the jellyfish is expected to move
+  static const double _jellyRadius = 38; // hitbox + float bob + safety margin
+  static const double _minGap =
+      30; // smallest gap that still counts as passable
+
+  // Tries a few random placements and returns the hazard that was added.
+  HazardComponent? _trySpawn(HazardComponent Function() make) {
+    for (var i = 0; i < 8; i++) {
+      final hazard = make();
+      if (_isFair(hazard)) {
+        add(hazard);
+        return hazard;
+      }
+    }
+    return null;
+  }
+
+  bool _isFair(HazardComponent candidate) {
+    final j = jellyfish;
+    if (j == null || size.x < 120) return true;
+    final existing = children.whereType<HazardComponent>().toList();
+    final lo = 32.0;
+    final hi = size.x - 32;
+    final near = (max(lo, j.position.x - 60), min(hi, j.position.x + 60));
+
+    if (_hasPath([...existing, candidate], near, j)) return true;
+    // If there was no way through even before this hazard (the player is
+    // already cornered), only require a way through from anywhere.
+    if (!_hasPath(existing, near, j)) {
+      return _hasPath([...existing, candidate], (lo, hi), j);
+    }
+    return false;
+  }
+
+  bool _hasPath(List<HazardComponent> hazards, (double, double) start,
+      JellyfishComponent j) {
+    const dt = 0.05;
+    const horizon = 9.0;
+    final lo = 32.0;
+    final hi = size.x - 32;
+    final jy = j.baseY - 14; // center of the jellyfish hitbox
+    var free = <(double, double)>[start];
+
+    for (var t = dt; t <= horizon; t += dt) {
+      // x-ranges the jellyfish center cannot be in at time t.
+      final blocked = <(double, double)>[];
+      for (final h in hazards) {
+        final p = h.positionAt(t);
+        final reach = h.collisionRadius + _jellyRadius;
+        final dy = p.dy - jy;
+        if (dy.abs() >= reach) continue;
+        final half = sqrt(reach * reach - dy * dy);
+        blocked.add((p.dx - half, p.dx + half));
+      }
+      free = _advance(free, blocked, _vmax * dt, lo, hi);
+      if (free.isEmpty) return false;
+    }
+    return true;
+  }
+
+  // Grows the reachable ranges by [reach], clamps them to the screen and
+  // removes everything that is blocked or too narrow to squeeze through.
+  List<(double, double)> _advance(List<(double, double)> free,
+      List<(double, double)> blocked, double reach, double lo, double hi) {
+    final grown = <(double, double)>[
+      for (final f in free) (max(lo, f.$1 - reach), min(hi, f.$2 + reach)),
+    ]..sort((a, b) => a.$1.compareTo(b.$1));
+
+    // Merge overlapping ranges.
+    final merged = <(double, double)>[];
+    for (final f in grown) {
+      if (merged.isNotEmpty && f.$1 <= merged.last.$2) {
+        merged[merged.length - 1] = (merged.last.$1, max(merged.last.$2, f.$2));
+      } else {
+        merged.add(f);
+      }
+    }
+
+    // Cut out the blocked ranges.
+    var pieces = merged;
+    for (final b in blocked) {
+      final next = <(double, double)>[];
+      for (final p in pieces) {
+        if (b.$2 <= p.$1 || b.$1 >= p.$2) {
+          next.add(p);
+          continue;
+        }
+        if (b.$1 - p.$1 > 0) next.add((p.$1, b.$1));
+        if (p.$2 - b.$2 > 0) next.add((b.$2, p.$2));
+      }
+      pieces = next;
+    }
+    return [
+      for (final p in pieces)
+        if (p.$2 - p.$1 >= _minGap) p,
+    ];
   }
 
   // Pearls sometimes float right next to the latest fish: risk and reward.
@@ -554,6 +664,7 @@ class JellyfishComponent extends PositionComponent
 
   bool get isInvulnerable => _invulnerable > 0 || _shield > 0;
   bool get hasShield => _shield > 0;
+  double get baseY => _baseY;
 
   final Paint _bellPaint = Paint();
   final Paint _glowPaint = Paint()
@@ -706,6 +817,12 @@ abstract class HazardComponent extends PositionComponent
 
   void move(double dt) => position.addScaled(velocity, dt);
 
+  // Radius that covers the hitbox, and where the center will be in [t] seconds.
+  double get collisionRadius;
+
+  Offset positionAt(double t) =>
+      Offset(position.x + velocity.x * t, position.y + velocity.y * t);
+
   CircleHitbox circleHitbox(double radius, Offset center) => CircleHitbox(
         radius: radius,
         position: Vector2(center.dx - radius, center.dy - radius),
@@ -740,6 +857,9 @@ class AnglerFishComponent extends HazardComponent {
 
   final Color color;
   final Color lureColor;
+
+  @override
+  double get collisionRadius => size.x * 0.38;
 
   @override
   Future<void> onLoad() async {
@@ -872,6 +992,9 @@ class ViperFishComponent extends HazardComponent {
   final Color color;
 
   @override
+  double get collisionRadius => size.x * 0.42 + size.y * 0.08;
+
+  @override
   Future<void> onLoad() async {
     add(circleHitbox(size.x * 0.42, Offset(size.x / 2, size.y * 0.58)));
   }
@@ -986,9 +1109,18 @@ class SpikeFishComponent extends HazardComponent {
   final Color color;
 
   @override
+  double get collisionRadius => size.x * 0.42;
+
+  @override
   Future<void> onLoad() async {
     add(circleHitbox(size.x * 0.42, Offset(size.x / 2, size.y / 2)));
   }
+
+  @override
+  Offset positionAt(double t) => Offset(
+        baseX + sin((time + t) * frequency + phase) * amplitude,
+        position.y + velocity.y * t,
+      );
 
   @override
   void move(double dt) {
@@ -1080,6 +1212,9 @@ class SpikeFishComponent extends HazardComponent {
 class MineComponent extends HazardComponent {
   MineComponent({required double mineSize, required double speed})
       : super(size: Vector2.all(mineSize), velocity: Vector2(0, speed));
+
+  @override
+  double get collisionRadius => size.x * 0.42;
 
   @override
   Future<void> onLoad() async {
