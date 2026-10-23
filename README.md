@@ -27,7 +27,8 @@ can. The deeper you get, the darker, faster and meaner it becomes.
 - ✨ **Golden pearls** – rare. They grant a **Golden Shield**: 5 seconds of invulnerability plus a magnet that pulls in nearby pearls.
 - ❤️ **Three lives** – a hit costs a heart, followed by a short blink of invulnerability.
 - 🌊 **Depth** – 2 m per second. The water changes from the *Sunlit Zone* through the *Twilight Zone* to the *Midnight Zone* and gets darker the deeper you dive.
-- 🎨 **Unlockable skins** – six jellyfish colours (Violet, Aqua, Coral, Golden, Toxic, Ghost) bought with pearls.
+- ⚡ **Electro Shock skill** – unlock it in the shop, charge it by collecting pearls, then **tap the screen** to stun every enemy around you. Three upgrades (faster charge, wider shockwave, longer stun) with three levels each.
+- 🛒 **Shop** – spend pearls on skills and on six jellyfish skins (Violet, Aqua, Coral, Golden, Toxic, Ghost).
 - 💾 **Saved progress** – best score, pearls, unlocked skins and your selection persist between sessions.
 - 🎵 **Soundtrack** – looping background music (see below).
 - 📱 **Mobile ready** – portrait layout, edge-to-edge display for modern Android, and a 9:16 window on desktop.
@@ -37,8 +38,11 @@ can. The deeper you get, the darker, faster and meaner it becomes.
 | Action | Input |
 | --- | --- |
 | Move the jellyfish | Drag left / right (finger or mouse) |
+| Electro Shock (when the bar is full) | Short tap / click anywhere |
 
 Everything else is tapping the buttons in the menus.
+
+The game also guarantees that there is always a way through: before a new fish or mine spawns, the next seconds are simulated, and the spawn is re-rolled if it would close the last gap.
 
 ## Run it
 
@@ -83,7 +87,8 @@ Inside `lib/main.dart`:
 | `JellyfishComponent` | The player: floating, pulsing, shield, skins |
 | `AnglerFishComponent`, `ViperFishComponent`, `SpikeFishComponent` | The fish |
 | `MineComponent`, `PearlComponent` | Hazard and collectible |
-| `MainMenuOverlay`, `SkinsOverlay`, `HudOverlay`, `GameOverOverlay` | Flutter UI on top of the game |
+| `MainMenuOverlay`, `ShopOverlay`, `HudOverlay`, `GameOverOverlay` | Flutter UI on top of the game |
+| `ShockwaveComponent` | Visual and timing of the Electro Shock |
 
 All fish, mines, pearls and the jellyfish are drawn with plain canvas shapes,
 there are no image assets.
@@ -95,7 +100,7 @@ Handy for taking screenshots or testing later difficulty:
 ```bash
 flutter run -d linux --dart-define=DEMO=true            # skip the menu, no damage
 flutter run -d linux --dart-define=DEMO=true --dart-define=START_ELAPSED=75   # start 75 s into a run
-flutter run -d linux --dart-define=SCREEN=skins         # open the skins menu directly
+flutter run -d linux --dart-define=SCREEN=skills        # open the shop directly (or SCREEN=skins)
 ```
 
 ## Built with

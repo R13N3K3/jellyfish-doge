@@ -12,13 +12,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 // Dev flags for screenshots: --dart-define=DEMO=true skips the menu and disables
 // damage, --dart-define=START_ELAPSED=60 starts at a later difficulty and
-// --dart-define=SCREEN=skins opens the skins menu directly.
+// --dart-define=SCREEN=skins (or skills) opens the shop directly.
 const bool _demo = bool.fromEnvironment('DEMO');
 const int _startElapsed = int.fromEnvironment('START_ELAPSED');
 const String _screen = String.fromEnvironment('SCREEN');
 
 const int maxLives = 3;
 const double goldenShieldSeconds = 5;
+
+// Electro shock skill: price of the skill and of each upgrade level.
+const int kShockCost = 30;
+const List<int> kUpgradeCosts = [15, 30, 60];
+
+enum UpgradeTrack { charge, range, stun }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,13 +65,14 @@ class _JellyfishAppState extends State<JellyfishApp> {
           initialActiveOverlays: const [
             _demo
                 ? HudOverlay.id
-                : _screen == 'skins'
-                    ? SkinsOverlay.id
+                : _screen == 'skins' || _screen == 'skills'
+                    ? ShopOverlay.id
                     : MainMenuOverlay.id
           ],
           overlayBuilderMap: {
             MainMenuOverlay.id: (context, g) => MainMenuOverlay(game: g),
-            SkinsOverlay.id: (context, g) => SkinsOverlay(game: g),
+            ShopOverlay.id: (context, g) =>
+                ShopOverlay(game: g, initialTab: _screen == 'skills' ? 1 : 0),
             HudOverlay.id: (context, g) => HudOverlay(game: g),
             GameOverOverlay.id: (context, g) => GameOverOverlay(game: g),
           },
@@ -153,7 +160,7 @@ const List<JellyfishSkin> kSkins = [
 // ---------------------------------------------------------------------------
 
 class JellyfishGame extends FlameGame
-    with HasCollisionDetection, DragCallbacks {
+    with HasCollisionDetection, DragCallbacks, TapCallbacks {
   JellyfishGame(this.prefs);
 
   final SharedPreferences prefs;
@@ -183,6 +190,22 @@ class JellyfishGame extends FlameGame
           : 0);
 
   JellyfishSkin get currentSkin => kSkins[selectedSkin.value];
+
+  // Electro shock skill: bought in the shop, charged by collecting pearls.
+  late final ValueNotifier<bool> shockOwned =
+      ValueNotifier<bool>(prefs.getBool('shock') ?? false);
+  late final List<ValueNotifier<int>> upgradeLevels = [
+    for (final t in UpgradeTrack.values)
+      ValueNotifier<int>(
+          min(prefs.getInt('upgrade_${t.name}') ?? 0, kUpgradeCosts.length)),
+  ];
+  final ValueNotifier<int> energy =
+      ValueNotifier<int>(0); // pearls toward a charge
+
+  int _level(UpgradeTrack t) => upgradeLevels[t.index].value;
+  int get chargeCost => 5 - _level(UpgradeTrack.charge);
+  double get shockRadius => 170 + 40.0 * _level(UpgradeTrack.range);
+  double get stunSeconds => 2.0 + 0.8 * _level(UpgradeTrack.stun);
 
   JellyfishComponent? jellyfish;
   double elapsed = _startElapsed.toDouble(); // survival time in seconds
@@ -453,6 +476,7 @@ class JellyfishGame extends FlameGame
       // x-ranges the jellyfish center cannot be in at time t.
       final blocked = <(double, double)>[];
       for (final h in hazards) {
+        if (t < h.stunLeft) continue; // stunned: harmless for now
         final p = h.positionAt(t);
         final reach = h.collisionRadius + _jellyRadius;
         final dy = p.dy - jy;
@@ -529,6 +553,7 @@ class JellyfishGame extends FlameGame
   void hitBy(HazardComponent hazard) {
     final j = jellyfish;
     if (_demo || isGameOver || inMenu || j == null || j.isInvulnerable) return;
+    if (hazard.isStunned) return;
     hazard.removeFromParent();
     _hitFlash = 0.4;
     lives.value = lives.value - 1;
@@ -546,6 +571,9 @@ class JellyfishGame extends FlameGame
     totalPearls.value += pearl.value;
     _bonus += 25 * pearl.value;
     prefs.setInt('pearls', totalPearls.value);
+    if (shockOwned.value) {
+      energy.value = min(chargeCost, energy.value + pearl.value);
+    }
 
     final j = jellyfish;
     if (j == null) return;
@@ -569,6 +597,52 @@ class JellyfishGame extends FlameGame
     }
     pauseEngine();
     overlays.add(GameOverOverlay.id);
+  }
+
+  // --- Electro shock -------------------------------------------------------
+
+  // A short tap anywhere fires the shock once the energy bar is full.
+  @override
+  void onTapUp(TapUpEvent event) {
+    if (isGameOver || inMenu || !shockOwned.value) return;
+    if (energy.value >= chargeCost) fireShock();
+  }
+
+  void fireShock() {
+    final j = jellyfish;
+    if (j == null) return;
+    energy.value = 0;
+    final center = j.position.clone();
+    final r = shockRadius;
+    for (final h in children.whereType<HazardComponent>()) {
+      if ((h.position - center).length <= r + h.collisionRadius) {
+        h.stun(stunSeconds);
+      }
+    }
+    add(ShockwaveComponent(center: center, radius: r));
+  }
+
+  void buyShock() {
+    if (shockOwned.value || totalPearls.value < kShockCost) return;
+    totalPearls.value -= kShockCost;
+    shockOwned.value = true;
+    prefs.setInt('pearls', totalPearls.value);
+    prefs.setBool('shock', true);
+  }
+
+  // Price of the next level, or null when the track is maxed out.
+  int? upgradeCost(UpgradeTrack t) {
+    final level = upgradeLevels[t.index].value;
+    return level >= kUpgradeCosts.length ? null : kUpgradeCosts[level];
+  }
+
+  void buyUpgrade(UpgradeTrack t) {
+    final cost = upgradeCost(t);
+    if (!shockOwned.value || cost == null || totalPearls.value < cost) return;
+    totalPearls.value -= cost;
+    upgradeLevels[t.index].value += 1;
+    prefs.setInt('pearls', totalPearls.value);
+    prefs.setInt('upgrade_${t.name}', upgradeLevels[t.index].value);
   }
 
   // --- Skins ---------------------------------------------------------------
@@ -610,6 +684,7 @@ class JellyfishGame extends FlameGame
     depth.value = 0;
     lives.value = maxLives;
     runPearls.value = 0;
+    energy.value = 0;
     isGameOver = false;
     newBest = false;
     jellyfish?.reset(size);
@@ -637,13 +712,13 @@ class JellyfishGame extends FlameGame
     resumeEngine();
   }
 
-  void openSkins() {
+  void openShop() {
     overlays.remove(MainMenuOverlay.id);
-    overlays.add(SkinsOverlay.id);
+    overlays.add(ShopOverlay.id);
   }
 
-  void closeSkins() {
-    overlays.remove(SkinsOverlay.id);
+  void closeShop() {
+    overlays.remove(ShopOverlay.id);
     overlays.add(MainMenuOverlay.id);
   }
 }
@@ -820,8 +895,16 @@ abstract class HazardComponent extends PositionComponent
   // Radius that covers the hitbox, and where the center will be in [t] seconds.
   double get collisionRadius;
 
-  Offset positionAt(double t) =>
+  // Where the center will be in [t] seconds, taking a running stun into account.
+  Offset positionAt(double t) => predict(max(0, t - stunLeft));
+
+  Offset predict(double t) =>
       Offset(position.x + velocity.x * t, position.y + velocity.y * t);
+
+  // Electro shock: a stunned hazard freezes and is harmless.
+  double stunLeft = 0;
+  bool get isStunned => stunLeft > 0;
+  void stun(double seconds) => stunLeft = max(stunLeft, seconds);
 
   CircleHitbox circleHitbox(double radius, Offset center) => CircleHitbox(
         radius: radius,
@@ -832,6 +915,10 @@ abstract class HazardComponent extends PositionComponent
   @override
   void update(double dt) {
     super.update(dt);
+    if (stunLeft > 0) {
+      stunLeft = max(0, stunLeft - dt);
+      return;
+    }
     time += dt;
     move(dt);
     final s = game.size;
@@ -839,6 +926,35 @@ abstract class HazardComponent extends PositionComponent
         position.x < -size.x * 2 ||
         position.x > s.x + size.x * 2) {
       removeFromParent();
+    }
+  }
+
+  @override
+  void renderTree(Canvas canvas) {
+    super.renderTree(canvas);
+    if (stunLeft > 0) _renderStun(canvas);
+  }
+
+  // Crackling electric ring around a stunned hazard (parent coordinates).
+  void _renderStun(Canvas canvas) {
+    final c = Offset(position.x, position.y);
+    final r = collisionRadius + 8;
+    final fade = min(1.0, stunLeft / 0.5);
+    stroke
+      ..color = const Color(0xFF7DF9FF).withValues(alpha: 0.9 * fade)
+      ..strokeWidth = 2.5;
+    canvas.drawCircle(c, r, stroke);
+    final rng = game.rng;
+    for (var i = 0; i < 3; i++) {
+      final a = rng.nextDouble() * 2 * pi;
+      final path = Path()
+        ..moveTo(c.dx + cos(a) * r * 0.4, c.dy + sin(a) * r * 0.4);
+      for (var k = 1; k <= 3; k++) {
+        final d = r * (0.4 + 0.35 * k);
+        final j = (rng.nextDouble() - 0.5) * 0.5;
+        path.lineTo(c.dx + cos(a + j) * d, c.dy + sin(a + j) * d);
+      }
+      canvas.drawPath(path, stroke..strokeWidth = 1.8);
     }
   }
 }
@@ -1117,7 +1233,7 @@ class SpikeFishComponent extends HazardComponent {
   }
 
   @override
-  Offset positionAt(double t) => Offset(
+  Offset predict(double t) => Offset(
         baseX + sin((time + t) * frequency + phase) * amplitude,
         position.y + velocity.y * t,
       );
@@ -1224,7 +1340,7 @@ class MineComponent extends HazardComponent {
   @override
   void update(double dt) {
     super.update(dt);
-    angle += dt * 0.6;
+    if (!isStunned) angle += dt * 0.6;
   }
 
   @override
@@ -1264,6 +1380,62 @@ class MineComponent extends HazardComponent {
     fill.color =
         Color.lerp(const Color(0xFF661111), const Color(0xFFFF4040), blink)!;
     canvas.drawCircle(c, s * 0.08, fill);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Electro shock wave
+// ---------------------------------------------------------------------------
+
+class ShockwaveComponent extends PositionComponent {
+  ShockwaveComponent({required Vector2 center, required this.radius})
+      : super(position: center) {
+    priority = 90;
+  }
+
+  final double radius;
+  double _age = 0;
+  static const _life = 0.5;
+  final Paint _paint = Paint()..style = PaintingStyle.stroke;
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    _age += dt;
+    if (_age >= _life) removeFromParent();
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final t = _age / _life;
+    final r = radius * (1 - pow(1 - t, 2));
+    final fade = 1 - t;
+
+    canvas.drawCircle(
+      Offset.zero,
+      r,
+      Paint()..color = const Color(0xFF7DF9FF).withValues(alpha: 0.14 * fade),
+    );
+    _paint
+      ..color = const Color(0xFFB9FBFF).withValues(alpha: 0.95 * fade)
+      ..strokeWidth = 2 + 6 * fade;
+    canvas.drawCircle(Offset.zero, r, _paint);
+
+    // Jagged bolts radiating outwards.
+    _paint
+      ..color = const Color(0xFFFFFFFF).withValues(alpha: fade)
+      ..strokeWidth = 2;
+    final rnd = Random(7);
+    for (var i = 0; i < 9; i++) {
+      final a = i * 2 * pi / 9 + rnd.nextDouble() * 0.3;
+      final path = Path()..moveTo(cos(a) * r * 0.3, sin(a) * r * 0.3);
+      for (var k = 1; k <= 4; k++) {
+        final d = r * (0.3 + 0.7 * k / 4);
+        final j = (rnd.nextDouble() - 0.5) * 0.25;
+        path.lineTo(cos(a + j) * d, sin(a + j) * d);
+      }
+      canvas.drawPath(path, _paint);
+    }
   }
 }
 
@@ -1470,6 +1642,49 @@ class _Pill extends StatelessWidget {
   }
 }
 
+class _EnergyBar extends StatelessWidget {
+  const _EnergyBar({required this.game});
+  final JellyfishGame game;
+
+  @override
+  Widget build(BuildContext context) {
+    final cost = game.chargeCost;
+    final energy = min(game.energy.value, cost);
+    final full = energy >= cost;
+    return _Pill(
+      vertical: 4,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            full ? '⚡ Tap to shock!' : '⚡',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: full ? Colors.amberAccent : Colors.white,
+            ),
+          ),
+          if (!full) ...[
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 90,
+              height: 8,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: energy / cost,
+                  color: Colors.cyanAccent,
+                  backgroundColor: Colors.white24,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class HudOverlay extends StatelessWidget {
   const HudOverlay({super.key, required this.game});
   static const String id = 'hud';
@@ -1484,8 +1699,15 @@ class HudOverlay extends StatelessWidget {
           padding: const EdgeInsets.only(top: 12),
           child: IgnorePointer(
             child: ListenableBuilder(
-              listenable: Listenable.merge(
-                  [game.score, game.lives, game.runPearls, game.depth]),
+              listenable: Listenable.merge([
+                game.score,
+                game.lives,
+                game.runPearls,
+                game.depth,
+                game.energy,
+                game.shockOwned,
+                ...game.upgradeLevels,
+              ]),
               builder: (context, _) {
                 final lives = game.lives.value.clamp(0, maxLives);
                 return Column(
@@ -1533,6 +1755,10 @@ class HudOverlay extends StatelessWidget {
                             fontSize: 13,
                             color: Colors.white70,
                             shadows: [Shadow(blurRadius: 4)])),
+                    if (game.shockOwned.value) ...[
+                      const SizedBox(height: 6),
+                      _EnergyBar(game: game),
+                    ],
                   ],
                 );
               },
@@ -1590,11 +1816,11 @@ class MainMenuOverlay extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: game.openSkins,
-                icon: const Icon(Icons.palette_outlined),
+                onPressed: game.openShop,
+                icon: const Icon(Icons.storefront_outlined),
                 label: const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Text('Skins', style: TextStyle(fontSize: 18)),
+                  child: Text('Shop', style: TextStyle(fontSize: 18)),
                 ),
               ),
             ],
@@ -1605,10 +1831,19 @@ class MainMenuOverlay extends StatelessWidget {
   }
 }
 
-class SkinsOverlay extends StatelessWidget {
-  const SkinsOverlay({super.key, required this.game});
-  static const String id = 'skins';
+class ShopOverlay extends StatefulWidget {
+  const ShopOverlay({super.key, required this.game, this.initialTab = 0});
+  static const String id = 'shop';
   final JellyfishGame game;
+  final int initialTab; // 0 = skins, 1 = skills
+
+  @override
+  State<ShopOverlay> createState() => _ShopOverlayState();
+}
+
+class _ShopOverlayState extends State<ShopOverlay> {
+  late int _tab = widget.initialTab;
+  JellyfishGame get game => widget.game;
 
   @override
   Widget build(BuildContext context) {
@@ -1620,7 +1855,7 @@ class SkinsOverlay extends StatelessWidget {
         child: Column(
           children: [
             const SizedBox(height: 16),
-            const Text('Skins',
+            const Text('Shop',
                 style: TextStyle(
                     fontSize: 34,
                     fontWeight: FontWeight.bold,
@@ -1630,6 +1865,19 @@ class SkinsOverlay extends StatelessWidget {
               builder: (context, pearls, _) => Text('🦪 $pearls',
                   style: const TextStyle(fontSize: 20, color: Colors.white)),
             ),
+            const SizedBox(height: 12),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(
+                    value: 0,
+                    label: Text('Skins'),
+                    icon: Icon(Icons.palette_outlined)),
+                ButtonSegment(
+                    value: 1, label: Text('Skills'), icon: Icon(Icons.bolt)),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (s) => setState(() => _tab = s.first),
+            ),
             const SizedBox(height: 8),
             Expanded(
               child: SingleChildScrollView(
@@ -1638,23 +1886,18 @@ class SkinsOverlay extends StatelessWidget {
                   listenable: Listenable.merge([
                     game.totalPearls,
                     game.unlockedSkins,
-                    game.selectedSkin
+                    game.selectedSkin,
+                    game.shockOwned,
+                    ...game.upgradeLevels,
                   ]),
-                  builder: (context, _) => Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      for (var i = 0; i < kSkins.length; i++) _card(i),
-                    ],
-                  ),
+                  builder: (context, _) => _tab == 0 ? _skins() : _skills(),
                 ),
               ),
             ),
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: FilledButton.icon(
-                onPressed: game.closeSkins,
+                onPressed: game.closeShop,
                 icon: const Icon(Icons.arrow_back),
                 label: const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -1668,7 +1911,16 @@ class SkinsOverlay extends StatelessWidget {
     );
   }
 
-  Widget _card(int i) {
+  // --- Skins tab -------------------------------------------------------------
+
+  Widget _skins() => Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 12,
+        runSpacing: 12,
+        children: [for (var i = 0; i < kSkins.length; i++) _skinCard(i)],
+      );
+
+  Widget _skinCard(int i) {
     final skin = kSkins[i];
     final unlocked = game.unlockedSkins.value.contains(i);
     final selected = game.selectedSkin.value == i;
@@ -1715,6 +1967,161 @@ class SkinsOverlay extends StatelessWidget {
           const SizedBox(height: 8),
           SizedBox(height: 40, child: Center(child: action)),
         ],
+      ),
+    );
+  }
+
+  // --- Skills tab ------------------------------------------------------------
+
+  Widget _skills() {
+    final owned = game.shockOwned.value;
+    final canBuy = game.totalPearls.value >= kShockCost;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380),
+        child: Column(
+          children: [
+            _panel(
+              highlight: owned,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text('⚡', style: TextStyle(fontSize: 40)),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Electro Shock',
+                                style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white)),
+                            SizedBox(height: 4),
+                            Text(
+                              'Collect pearls to charge the bar, then tap the '
+                              'screen to stun every enemy around you.',
+                              style: TextStyle(
+                                  fontSize: 14, color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: owned
+                        ? const Text('Unlocked',
+                            style: TextStyle(
+                                color: Colors.lightGreenAccent, fontSize: 15))
+                        : FilledButton(
+                            onPressed: canBuy ? game.buyShock : null,
+                            child: Text('Unlock  🦪 $kShockCost'),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            for (final t in UpgradeTrack.values) ...[
+              _upgradeRow(t, owned),
+              const SizedBox(height: 10),
+            ],
+            if (!owned)
+              const Text('Unlock the shock to buy upgrades.',
+                  style: TextStyle(color: Colors.white54, fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _panel({required Widget child, bool highlight = false}) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: highlight ? Colors.lightGreenAccent : Colors.white24,
+            width: highlight ? 2 : 1,
+          ),
+        ),
+        child: child,
+      );
+
+  Widget _upgradeRow(UpgradeTrack t, bool owned) {
+    final level = game.upgradeLevels[t.index].value;
+    final cost = game.upgradeCost(t);
+    final canBuy = owned && cost != null && game.totalPearls.value >= cost;
+
+    // (title, current value -> next value)
+    String change(String Function(int) f) =>
+        cost == null ? f(level) : '${f(level)}  →  ${f(level + 1)}';
+    final (String title, String detail) = switch (t) {
+      UpgradeTrack.charge => (
+          'Faster charge',
+          change((l) => '${5 - l} pearls'),
+        ),
+      UpgradeTrack.range => (
+          'Wider shockwave',
+          change((l) => '${170 + 40 * l} px'),
+        ),
+      UpgradeTrack.stun => (
+          'Longer stun',
+          change((l) => '${(2 + 0.8 * l).toStringAsFixed(1)} s'),
+        ),
+    };
+
+    return Opacity(
+      opacity: owned ? 1 : 0.45,
+      child: _panel(
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style:
+                          const TextStyle(fontSize: 16, color: Colors.white)),
+                  const SizedBox(height: 2),
+                  Text(detail,
+                      style:
+                          const TextStyle(fontSize: 13, color: Colors.white70)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      for (var i = 0; i < kUpgradeCosts.length; i++)
+                        Container(
+                          width: 14,
+                          height: 6,
+                          margin: const EdgeInsets.only(right: 4),
+                          decoration: BoxDecoration(
+                            color:
+                                i < level ? Colors.cyanAccent : Colors.white24,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            if (cost == null)
+              const Text('MAX',
+                  style: TextStyle(
+                      color: Colors.cyanAccent, fontWeight: FontWeight.bold))
+            else
+              FilledButton(
+                onPressed: canBuy ? () => game.buyUpgrade(t) : null,
+                child: Text('🦪 $cost'),
+              ),
+          ],
+        ),
       ),
     );
   }
