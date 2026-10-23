@@ -1,0 +1,24 @@
+name: jellyfish_game
+description: Eine Qualle weicht herabschwimmenden Fischen aus (Flutter + Flame).
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flame: ^1.22.0
+  shared_preferences: ^2.5.6
+  flame_audio: ^2.12.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/audio/
